@@ -34,7 +34,7 @@ struct GoalExpression {
 struct LegTarget {
     InstrumentId instrument_id;
     GoalExpression long_goal{};
-    GoalExpression short_goal{};  // Kept for future short support; V1 rejects non-zero short targets.
+    GoalExpression short_goal{};  // 为后续做空支持预留；V1 会拒绝非零 short 目标。
     std::optional<ExecutionStyle> style_override{};
     int priority{0};
 };
@@ -66,4 +66,4 @@ struct SetBasketTargetCommand {
     std::chrono::system_clock::time_point timestamp{std::chrono::system_clock::now()};
 };
 
-}  // namespace exec
+}  // 命名空间 exec

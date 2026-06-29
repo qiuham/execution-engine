@@ -16,8 +16,8 @@ ExecutionReport SimAdapter::send_order(const ChildOrder& order) {
         .last_qty = order.intent.quantity,
         .cumulative_qty = order.intent.quantity,
         .last_price = price,
-        .text = "simulated immediate fill",
+        .text = "模拟立即成交",
     };
 }
 
-}  // namespace exec
+}  // 命名空间 exec

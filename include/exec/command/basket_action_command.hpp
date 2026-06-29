@@ -17,4 +17,4 @@ struct BasketActionCommand {
     std::chrono::system_clock::time_point timestamp{std::chrono::system_clock::now()};
 };
 
-}  // namespace exec
+}  // 命名空间 exec

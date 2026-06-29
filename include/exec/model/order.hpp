@@ -48,13 +48,13 @@ struct ExecutionStyle {
     bool allow_maker{true};
     bool allow_taker{true};
     Quantity min_child_qty{1};
-    Quantity max_child_qty{0};  // 0 means unlimited in V1.
+    Quantity max_child_qty{0};  // V1 中 0 表示不限制。
 };
 
 struct PositionOrderIntent {
     InstrumentId instrument_id;
     TradeSide side{TradeSide::Buy};
-    PositionBucket bucket{PositionBucket::Long};  // V1 only executes Long.
+    PositionBucket bucket{PositionBucket::Long};  // V1 只执行 Long bucket。
     Quantity quantity{0};
     OrderSpec order{};
     ExecutionStyle style{};
@@ -73,4 +73,4 @@ inline const char* to_string(PositionBucket bucket) {
     return bucket == PositionBucket::Long ? "LONG" : "SHORT";
 }
 
-}  // namespace exec
+}  // 命名空间 exec

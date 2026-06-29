@@ -16,7 +16,7 @@ std::string describe_intent(const PositionOrderIntent& intent) {
         << intent.instrument_id;
     return out.str();
 }
-}  // namespace
+}  // 匿名命名空间
 
 ExecutionEngine::ExecutionEngine(ExecutionStateView& state, IVenueAdapter& adapter)
     : state_(state), adapter_(adapter) {}
@@ -29,15 +29,15 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
     if (!validate_v1(basket, reject_reason)) {
         basket.status = BasketStatus::Rejected;
         result.status = basket.status;
-        result.logs.push_back("basket rejected: " + reject_reason);
+        result.logs.push_back("basket 被拒绝: " + reject_reason);
         return result;
     }
 
     basket.status = BasketStatus::Active;
     result.logs.push_back("basket " + basket.basket_id + " active");
 
-    // V1 is synchronous for clarity: plan a phase, submit simulated child orders,
-    // apply reports, then re-plan until no gap remains.
+    // V1 为了便于理解先使用同步流程：规划一个阶段、发送模拟子单、处理回报，
+    // 然后继续重规划，直到没有剩余缺口。
     for (int iteration = 0; iteration < 32; ++iteration) {
         const auto intents = planner_.plan_next(basket, state_);
         if (intents.empty()) {
@@ -47,7 +47,7 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
             return result;
         }
 
-        result.logs.push_back("planner produced " + std::to_string(intents.size()) + " child order(s)");
+        result.logs.push_back("planner 生成 " + std::to_string(intents.size()) + " 个子单");
         for (const auto& intent : intents) {
             submit_child_order(basket, intent, result);
         }
@@ -55,7 +55,7 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
 
     basket.status = BasketStatus::Failed;
     result.status = basket.status;
-    result.logs.push_back("basket failed: planner iteration limit reached");
+    result.logs.push_back("basket 失败: planner 达到迭代上限");
     return result;
 }
 
@@ -87,20 +87,20 @@ BasketExecution ExecutionEngine::resolve(const SetBasketTargetCommand& command) 
 
 bool ExecutionEngine::validate_v1(const BasketExecution& basket, std::string& reason) const {
     if (basket.legs.empty()) {
-        reason = "basket must contain at least one leg";
+        reason = "basket 至少需要包含一个 leg";
         return false;
     }
     for (const auto& leg : basket.legs) {
         if (leg.instrument_id.empty()) {
-            reason = "leg instrument id is empty";
+            reason = "leg instrument_id 为空";
             return false;
         }
         if (leg.target_long_qty < 0) {
-            reason = "V1 does not support negative long targets";
+            reason = "V1 不支持负数 long 目标";
             return false;
         }
         if (leg.target_short_qty != 0) {
-            reason = "V1 does not support short targets";
+            reason = "V1 不支持 short 目标";
             return false;
         }
     }
@@ -112,7 +112,7 @@ void ExecutionEngine::submit_child_order(const BasketExecution& basket,
                                          ExecutionResult& result) {
     const auto reservation = state_.reserve_for_submit(intent);
     if (!reservation.ok) {
-        result.logs.push_back("child rejected before send: " + describe_intent(intent) + " reason=" + reservation.reason);
+        result.logs.push_back("子单发送前被拒绝: " + describe_intent(intent) + " 原因=" + reservation.reason);
         return;
     }
 
@@ -121,21 +121,21 @@ void ExecutionEngine::submit_child_order(const BasketExecution& basket,
     order.basket_id = basket.basket_id;
     order.intent = intent;
 
-    result.logs.push_back("send child " + std::to_string(order.order_id) + ": " + describe_intent(intent));
+    result.logs.push_back("发送子单 " + std::to_string(order.order_id) + ": " + describe_intent(intent));
     auto report = adapter_.send_order(order);
     order_state_machine_.apply(order, report);
 
     if (report.status == OrderStatus::Filled || report.status == OrderStatus::PartiallyFilled) {
         state_.apply_fill(intent, report.last_qty, report.last_price);
-        result.logs.push_back("fill child " + std::to_string(order.order_id) + ": qty=" +
+        result.logs.push_back("子单成交 " + std::to_string(order.order_id) + ": qty=" +
                               std::to_string(report.last_qty) + " price=" + std::to_string(report.last_price));
         return;
     }
 
     if (report.status == OrderStatus::Rejected || report.status == OrderStatus::Canceled) {
         state_.release_rejected(intent);
-        result.logs.push_back("child not filled " + std::to_string(order.order_id) + ": " + report.text);
+        result.logs.push_back("子单未成交 " + std::to_string(order.order_id) + ": " + report.text);
     }
 }
 
-}  // namespace exec
+}  // 命名空间 exec

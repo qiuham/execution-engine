@@ -6,7 +6,7 @@ namespace {
 Notional notional_for(Quantity qty, Price price) {
     return static_cast<Notional>(qty) * static_cast<Notional>(price);
 }
-}  // namespace
+}  // 匿名命名空间
 
 void ExecutionStateView::set_cash(Notional cash) {
     snapshot_cash_ = cash;
@@ -50,17 +50,17 @@ Price ExecutionStateView::mark_price(const InstrumentId& instrument_id) const {
 
 ReservationResult ExecutionStateView::reserve_for_submit(const PositionOrderIntent& intent) {
     if (intent.quantity <= 0) {
-        return {false, "quantity must be positive"};
+        return {false, "数量必须为正"};
     }
     if (intent.bucket != PositionBucket::Long) {
-        return {false, "V1 only supports LONG bucket"};
+        return {false, "V1 只支持 LONG bucket"};
     }
 
     auto& state = mutable_instrument(intent.instrument_id);
     if (intent.side == TradeSide::Sell) {
         const auto available = effective_long(intent.instrument_id) - state.reserved_sell_long;
         if (available < intent.quantity) {
-            return {false, "not enough long inventory to sell"};
+            return {false, "long 持仓不足，无法卖出"};
         }
         state.reserved_sell_long += intent.quantity;
         state.working_sell_long += intent.quantity;
@@ -69,11 +69,11 @@ ReservationResult ExecutionStateView::reserve_for_submit(const PositionOrderInte
 
     const auto price = state.mark_price;
     if (price <= 0) {
-        return {false, "missing mark price for buy reservation"};
+        return {false, "买入 reservation 缺少 mark price"};
     }
     const auto cost = notional_for(intent.quantity, price);
     if (effective_cash() < cost) {
-        return {false, "not enough cash to buy"};
+        return {false, "现金不足，无法买入"};
     }
     reserved_cash_ += cost;
     state.working_buy_long += intent.quantity;
@@ -159,4 +159,4 @@ const InstrumentExecutionState* ExecutionStateView::find_instrument(const Instru
     return &it->second;
 }
 
-}  // namespace exec
+}  // 命名空间 exec
