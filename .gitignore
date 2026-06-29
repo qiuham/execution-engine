@@ -1,0 +1,24 @@
+# Build outputs
+build/
+cmake-build-*/
+out/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# IDE / editor
+.idea/
+.vscode/
+.DS_Store
+
+# Logs
+*.log
