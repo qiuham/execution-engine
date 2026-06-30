@@ -36,8 +36,43 @@ Quantity ExecutionStateView::projected_long(const InstrumentId& instrument_id) c
     return state->snapshot_long + state->fill_delta_long + state->working_buy_long - state->working_sell_long;
 }
 
+Quantity ExecutionStateView::working_buy_long(const InstrumentId& instrument_id) const {
+    const auto* state = find_instrument(instrument_id);
+    if (state == nullptr) {
+        return 0;
+    }
+    return state->working_buy_long;
+}
+
+Quantity ExecutionStateView::working_sell_long(const InstrumentId& instrument_id) const {
+    const auto* state = find_instrument(instrument_id);
+    if (state == nullptr) {
+        return 0;
+    }
+    return state->working_sell_long;
+}
+
+bool ExecutionStateView::has_working_order(const InstrumentId& instrument_id) const {
+    const auto* state = find_instrument(instrument_id);
+    if (state == nullptr) {
+        return false;
+    }
+    return state->working_buy_long > 0 || state->working_sell_long > 0;
+}
+
 Notional ExecutionStateView::effective_cash() const {
     return snapshot_cash_ + cash_delta_ - reserved_cash_;
+}
+
+Notional ExecutionStateView::total_equity() const {
+    Notional equity = snapshot_cash_ + cash_delta_;
+    for (const auto& [instrument_id, state] : instruments_) {
+        (void)instrument_id;
+        if (state.mark_price > 0) {
+            equity += notional_for(state.snapshot_long + state.fill_delta_long, state.mark_price);
+        }
+    }
+    return equity;
 }
 
 Price ExecutionStateView::mark_price(const InstrumentId& instrument_id) const {
@@ -116,35 +151,43 @@ void ExecutionStateView::apply_fill(const PositionOrderIntent& intent, Quantity 
     cash_delta_ += fill_notional;
 }
 
-void ExecutionStateView::release_rejected(const PositionOrderIntent& intent) {
+void ExecutionStateView::release_unfilled(const PositionOrderIntent& intent, Quantity unfilled_qty) {
+    if (unfilled_qty <= 0) {
+        return;
+    }
+
     auto& state = mutable_instrument(intent.instrument_id);
     if (intent.bucket != PositionBucket::Long) {
         return;
     }
 
     if (intent.side == TradeSide::Sell) {
-        state.working_sell_long -= intent.quantity;
+        state.working_sell_long -= unfilled_qty;
         if (state.working_sell_long < 0) {
             state.working_sell_long = 0;
         }
-        state.reserved_sell_long -= intent.quantity;
+        state.reserved_sell_long -= unfilled_qty;
         if (state.reserved_sell_long < 0) {
             state.reserved_sell_long = 0;
         }
         return;
     }
 
-    state.working_buy_long -= intent.quantity;
+    state.working_buy_long -= unfilled_qty;
     if (state.working_buy_long < 0) {
         state.working_buy_long = 0;
     }
     const auto price = state.mark_price;
     if (price > 0) {
-        reserved_cash_ -= notional_for(intent.quantity, price);
+        reserved_cash_ -= notional_for(unfilled_qty, price);
         if (reserved_cash_ < 0) {
             reserved_cash_ = 0;
         }
     }
+}
+
+void ExecutionStateView::release_rejected(const PositionOrderIntent& intent) {
+    release_unfilled(intent, intent.quantity);
 }
 
 InstrumentExecutionState& ExecutionStateView::mutable_instrument(const InstrumentId& instrument_id) {

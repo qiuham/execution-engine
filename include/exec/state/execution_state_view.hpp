@@ -30,11 +30,16 @@ public:
 
     Quantity effective_long(const InstrumentId& instrument_id) const;
     Quantity projected_long(const InstrumentId& instrument_id) const;
+    Quantity working_buy_long(const InstrumentId& instrument_id) const;
+    Quantity working_sell_long(const InstrumentId& instrument_id) const;
+    bool has_working_order(const InstrumentId& instrument_id) const;
     Notional effective_cash() const;
+    Notional total_equity() const;
     Price mark_price(const InstrumentId& instrument_id) const;
 
     ReservationResult reserve_for_submit(const PositionOrderIntent& intent);
     void apply_fill(const PositionOrderIntent& intent, Quantity fill_qty, Price fill_price);
+    void release_unfilled(const PositionOrderIntent& intent, Quantity unfilled_qty);
     void release_rejected(const PositionOrderIntent& intent);
 
 private:

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "exec/core/types.hpp"
+#include "exec/model/constraints.hpp"
 #include "exec/model/order.hpp"
 
 namespace exec {
@@ -29,12 +30,21 @@ struct GoalExpression {
     static GoalExpression set_quantity(Quantity quantity) {
         return GoalExpression{GoalOp::SetTo, GoalMeasure::Quantity, static_cast<double>(quantity)};
     }
+
+    static GoalExpression set_notional(Notional notional) {
+        return GoalExpression{GoalOp::SetTo, GoalMeasure::Notional, static_cast<double>(notional)};
+    }
+
+    static GoalExpression set_weight(double weight) {
+        return GoalExpression{GoalOp::SetTo, GoalMeasure::Weight, weight};
+    }
 };
 
 struct LegTarget {
     InstrumentId instrument_id;
     GoalExpression long_goal{};
     GoalExpression short_goal{};  // 为后续做空支持预留；V1 会拒绝非零 short 目标。
+    LegConstraints constraints{};
     std::optional<ExecutionStyle> style_override{};
     int priority{0};
 };

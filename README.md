@@ -1,91 +1,99 @@
 # Execution Engine
 
-C++20 执行层原型，目标是先把以 basket 为统一入口的执行模型、订单生命周期、资源预占和模拟撮合链路跑通，再接真实交易通道。
+C++20 执行层原型。当前目标不是做完整交易系统，而是把「上游目标 / 直接指令 -> 执行内部绝对数量 -> 子单 -> 回报 -> 执行侧状态视图」这条链路先做清楚。
 
-当前版本刻意保持很小：先保证模型清楚、状态能流转、调仓能闭环，不急着做复杂规则和极低延迟优化。
+## 核心边界
 
-## 设计方向
+执行层只维护执行需要的实时视图，不维护官方持仓账本，也不做策略组合构建：
 
-核心执行结构统一成：
-
-```text
-BasketExecution
-  -> LegExecution
-      -> PositionOrderIntent
-          -> ChildOrder
-```
-
-关键约定：
-
-- 以 basket 为统一入口：单标的执行也是一个只有一条 leg 的 basket。
-- V1 先只做多：当前只真正支持 `BUY LONG` 和 `SELL LONG`。
-- 内部主语义是 `BUY/SELL + LONG/SHORT + quantity`；V1 遇到 `SHORT` 目标或动作会拒绝。
-- `ExecutionStateView` 不是官方持仓账本，也不是组合管理系统；它只是执行侧本地实时视图，由外部快照、成交增量、本地在途订单增量和资源预占组成。
-- 规划器使用阶段式模型。默认 `ReduceThenIncrease` 表示先做降低仓位/释放资源的动作，再做增加仓位/占用资源的动作。V1 只做多时等价于先卖再买。
-- `SimAdapter` 目前直接模拟立即全成交，用来先验证目标 -> 规划 -> 子单 -> 回报 -> 状态更新 的完整闭环。
+- `ExecutionStateView` = 外部快照 + 成交增量 + 在途订单 overlay + reservation。
+- 上游可以给 basket 目标，也可以给直接动作；单标的是只有一个 leg 的 basket。
+- 入口层可以接受数量、名义金额、权重等表达；进入 planner 后统一变成绝对目标数量和绝对子单数量。
+- V1 只支持 `BUY LONG` / `SELL LONG`，遇到 short 目标或 short 动作会拒绝。
+- 暂不做翻仓、借券、做空产品规则、真实撤单和真实交易通道。
 
 ## 当前执行链路
 
 ```text
-SetBasketTargetCommand
+ExecutionCommand
+    |
+    +-- SetBasketTargetCommand / BasketActionCommand / ControlCommand
     |
     v
-ExecutionEngine::resolve
+ExecutionEngine::handle / submit / control
+    |
+    v
+BasketTargetCollection
     |
     v
 PhasePlanner
     |
     v
-ExecutionStateView 资源预占
+ExecutionStateView reservation
     |
     v
-子单 / 订单状态机
+ChildOrder + OrderStateMachine
     |
     v
 SimAdapter
     |
     v
-ExecutionStateView 成交增量更新
+ExecutionStateView 成交增量 / 未成交资源释放
     |
     v
-滚动重规划，直到 basket 完成
+滚动重规划，直到完成、阻塞或等待在途订单
 ```
 
-示例：
+默认规划模式是 `ReduceThenIncrease`，即先做降低敞口 / 释放资源的 leg，再做增加敞口 / 占用资源的 leg。只做多时就是先卖再买。
+
+## 已实现功能
+
+- basket-first 接口：`SetBasketTargetCommand` 支持多标的绝对数量调仓，单标的用一条 leg 兼容。
+- 目标解析：`GoalOp::Keep`、`SetTo`、`ChangeBy`；`GoalMeasure::Quantity`、`Notional`、`Weight` 会在入口层解析成绝对数量。
+- 直接指令：`BasketActionCommand` 可以直接提交绝对数量的 `PositionOrderIntent`。
+- 目标集合：`BasketTargetCollection` 按 instrument 维护目标缺口，重复 leg 会用后出现的目标覆盖前一个目标。
+- 约束和误差：每个 leg 支持 `lot_size`、`qty_tolerance`、`min_order_qty`、`min_order_notional`。
+- 现金处理：买入会按当前可用现金和 mark price 裁剪到可负担数量；不可满足最小下单约束时返回 planner 阻塞原因。
+- 阶段规划：支持 `ReduceThenIncrease`、`Parallel`、`Sequential`，并按 priority 排序。
+- 执行状态视图：维护 long 快照、成交增量、working buy/sell、sell reservation、cash reservation、mark price。
+- OMS 状态机：覆盖 ack、partial fill、filled、pending cancel、canceled、rejected、重复 trade id、overfill 截断和终态幂等忽略。
+- 模拟通道：`SimAdapter` 默认返回 ack + 立即全成，也支持脚本化回报，用来测试部分成交、拒单、撤单和重复回报。
+- 交易状态：`TradingState::Active`、`Reducing`、`Halted`、`Killed`；`Reducing` 只允许降低敞口，`Halted/Killed` 禁止新单。
+- 同步滚动重规划：每轮成交后重新 resolve 和 plan；权重 / 名义金额目标可以基于最新执行侧视图动态换算。
+
+## 误差处理规则
+
+- 目标缺口在 `qty_tolerance` 内：认为已满足，不再发单。
+- 缺口小于 lot 或最小数量：认为是可接受残差，不为残差反复重试。
+- 下单名义金额低于 `min_order_notional`：不发单；如果这是唯一剩余缺口，则 basket 会在残差范围内完成。
+- 买入现金不足：先裁剪到可负担数量；裁剪后仍不满足最小下单约束，则 planner 返回阻塞原因。
+- 有在途订单时：`projected_long = effective_long + working_buy_long - working_sell_long`，避免重复发同方向订单。
+
+## 交易状态
 
 ```text
-初始状态：
-  cash = 100
-  A = 100
-  B = 0
-
-目标：
-  A = 50
-  B = 30
-
-执行计划：
-  SELL LONG 50 A
-  BUY  LONG 30 B
-
-最终状态：
-  A = 50
-  B = 30
-  cash = 300
+Active    正常接收目标和子单
+Reducing  只允许降低敞口的子单，例如 SELL LONG
+Halted    禁止新子单，后续会保留撤单通道
+Killed    kill switch 触发后的终态，需要人工恢复
 ```
+
+当前 `ControlCommand` 已能切换 `Pause -> Halted`、`Resume -> Active`、`ReduceOnly -> Reducing`、`KillSwitch -> Killed`。真实撤单链路还没有接入。
 
 ## 目录结构
 
 ```text
 apps/execution_node/        示例可执行程序
 include/exec/adapter/       交易通道接口和 SimAdapter
-include/exec/command/       basket 目标/直接动作/控制命令类型
+include/exec/command/       basket 目标、直接动作、控制命令
 include/exec/core/          公共 ID 和基础数值类型
 include/exec/engine/        ExecutionEngine 门面
 include/exec/execution/     BasketExecution 和 LegExecution 状态
-include/exec/model/         订单、动作、执行风格模型
-include/exec/oms/           子单状态机骨架
-include/exec/planner/       阶段式规划器
-include/exec/state/         ExecutionStateView 和资源预占增量
+include/exec/model/         订单、约束、执行风格模型
+include/exec/oms/           子单状态机
+include/exec/planner/       目标集合和阶段式规划器
+include/exec/risk/          TradingState 风控闸门
+include/exec/state/         执行侧状态视图和资源预占
 src/                        实现文件
 ```
 
@@ -97,41 +105,39 @@ cmake --build build
 ./build/execution_engine
 ```
 
-仓库会忽略本地 CLion/CMake 构建目录。
+示例输出会先卖出 A，再买入 B：
 
-## V1 范围
+```text
+SELL LONG 50 A
+BUY  LONG 30 B
+final A=50
+final B=30
+final cash=300
+```
 
-当前已实现：
+## 参考过的外部实现
 
-- 以 basket 为统一入口的目标命令接口。
-- 绝对数量目标：`GoalOp::SetTo` + `GoalMeasure::Quantity`。
-- 只做多的执行状态视图和资源预占逻辑。
-- 先降低仓位、再增加仓位的阶段式规划器。
-- 原型阶段的同步执行循环。
-- 最小子单状态机骨架。
-- 立即成交的模拟交易通道。
-- 两个 leg 的调仓示例。
+- QuantConnect LEAN：目标数量会按 open orders 做 projected holdings，调仓时优先处理降低保证金 / 降低仓位的目标，并按 lot size 处理残差。
+- NautilusTrader：风险引擎有 `ACTIVE/REDUCING/HALTED` 状态，执行引擎对重复成交、overfill、乱序状态和 reconciliation 有明确边界。
+- WonderTrader：差量执行器会维护目标和 diff，成交后更新 diff；执行单元会避免与未完成订单方向冲突，并限制单次下单数量。
 
-V1 暂不实现：
-
-- 做空、对锁模式、翻仓/穿零策略。
-- 百分比目标和名义金额目标解析。
-- 真正异步事件循环。
-- 真实交易所 / broker 适配器。
-- 部分成交、拒单、撤单、重复回报、乱序回报等完整 OMS 边界。
-- 多策略虚拟账户归因。
-- 复杂 DAG / 优化器式 basket 规划器。
+这些实现的共同点是：目标解析、风险闸门、执行状态和 OMS 要分层；热路径不要混入复杂组合构建逻辑。
 
 ## 下一步计划
 
-1. 加强 `OrderStateMachine`：覆盖 ack、reject、部分成交、全成、撤单确认、撤单拒绝、重复回报和乱序回报。
-2. 扩展 `SimAdapter`：支持脚本化成交、拒单、撤单，用确定性场景测试规划器和 OMS。
-3. 把资源预占逻辑从 `ExecutionStateView` 拆成独立 `ReservationBook`，并补现金和库存资源预占单测。
-4. 增加 `TargetResolver`，支持名义金额和权重目标，但仍保持 V1 只做多。
-5. 把同步原型循环改成事件驱动执行循环。
-6. 在真实适配器前增加 `VenueMapper` 边界，让内部订单意图和交易所字段分离。
-7. 增加 basket 调仓测试：先卖后买、现金不足、部分完成、单 leg 失败。
+1. 把 `ChildOrder` 从同步局部变量升级为长期订单表，支持异步回报、撤单请求和恢复。
+2. 给 `OrderStateMachine`、`PhasePlanner`、reservation、脚本化 `SimAdapter` 补单元测试。
+3. 接入 cancel path：`CancelBasket`、`CancelAll`、pending cancel、cancel reject、撤单后释放资源。
+4. 增加 `VenueMapper`，把内部 `BUY/SELL + LONG/SHORT + quantity` 映射到不同交易所字段。
+5. 增加外部快照 reconciliation：订单、成交、持仓、资金快照和本地 overlay 的对账。
+6. 性能优化：instrument 字符串换成内部整数 ID，basket/intent 预分配，热路径去日志字符串，事件循环改成无锁或少锁队列。
+7. 扩展产品规则：是否可做空、最小名义金额、涨跌停、交易时段、保证金、资金费率等放到 instrument / venue metadata。
 
-## 说明
+## 性能原则
 
-当前优先级是正确性和执行模型清晰度，不是低延迟。等状态机、资源预占、恢复语义稳定后，再把热路径逐步改成预分配对象、环形队列和分片事件循环。
+当前版本为了可读性保留了 `std::string`、`std::vector` 和同步日志。后续低延迟版本会保持同样的业务边界，但把热路径改成：
+
+- 入口解析和复杂约束在控制面完成，planner 只吃绝对数量和绝对价格。
+- 每个 instrument 维护 O(1) 状态槽位，不在每个 tick 全量扫描 basket。
+- 订单回报通过预分配对象和事件队列进入 OMS。
+- 日志、持久化、指标上报异步化，不阻塞发单路径。

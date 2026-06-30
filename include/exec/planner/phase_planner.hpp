@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "exec/execution/basket_execution.hpp"
@@ -8,10 +9,16 @@
 
 namespace exec {
 
+struct PlannerDecision {
+    std::vector<PositionOrderIntent> intents;
+    std::vector<std::string> notes;
+    std::vector<std::string> blocked_reasons;
+    bool complete{false};
+};
+
 class PhasePlanner {
 public:
-    std::vector<PositionOrderIntent> plan_next(const BasketExecution& basket,
-                                               const ExecutionStateView& state) const;
+    PlannerDecision plan_next(const BasketExecution& basket, const ExecutionStateView& state) const;
 };
 
 }  // 命名空间 exec

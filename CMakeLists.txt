@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(exec_engine
     src/adapter/sim_adapter.cpp
     src/engine/execution_engine.cpp
+    src/planner/basket_target_collection.cpp
     src/planner/phase_planner.cpp
     src/state/execution_state_view.cpp
 )

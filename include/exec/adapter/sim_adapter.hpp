@@ -1,5 +1,8 @@
 #pragma once
 
+#include <deque>
+#include <vector>
+
 #include "exec/adapter/venue_adapter.hpp"
 #include "exec/state/execution_state_view.hpp"
 
@@ -9,10 +12,12 @@ class SimAdapter final : public IVenueAdapter {
 public:
     explicit SimAdapter(const ExecutionStateView& state);
 
-    ExecutionReport send_order(const ChildOrder& order) override;
+    void push_scripted_reports(std::vector<ExecutionReport> reports);
+    std::vector<ExecutionReport> send_order(const ChildOrder& order) override;
 
 private:
     const ExecutionStateView& state_;
+    std::deque<std::vector<ExecutionReport>> scripted_reports_;
 };
 
 }  // 命名空间 exec

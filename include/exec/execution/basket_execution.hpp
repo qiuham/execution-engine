@@ -5,6 +5,7 @@
 
 #include "exec/command/basket_target_command.hpp"
 #include "exec/core/types.hpp"
+#include "exec/model/constraints.hpp"
 #include "exec/model/order.hpp"
 
 namespace exec {
@@ -29,6 +30,7 @@ struct LegExecution {
     InstrumentId instrument_id;
     Quantity target_long_qty{0};
     Quantity target_short_qty{0};
+    LegConstraints constraints{};
     LegStatus status{LegStatus::Pending};
     ExecutionStyle style{};
     int priority{0};

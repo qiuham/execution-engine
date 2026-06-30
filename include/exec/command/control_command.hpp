@@ -10,6 +10,7 @@ namespace exec {
 enum class ControlAction {
     Pause,
     Resume,
+    ReduceOnly,
     CancelBasket,
     CancelAll,
     KillSwitch,
