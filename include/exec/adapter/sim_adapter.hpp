@@ -13,11 +13,14 @@ public:
     explicit SimAdapter(const ExecutionStateView& state);
 
     void push_scripted_reports(std::vector<ExecutionReport> reports);
-    std::vector<ExecutionReport> send_order(const ChildOrder& order) override;
+    bool has_pending_reports() const;
+    std::vector<ExecutionReport> drain_reports();
+    SendOrderResult send_order(const ChildOrder& order) override;
 
 private:
     const ExecutionStateView& state_;
     std::deque<std::vector<ExecutionReport>> scripted_reports_;
+    std::vector<ExecutionReport> pending_reports_;
 };
 
 }  // 命名空间 exec

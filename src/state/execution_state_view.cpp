@@ -20,6 +20,10 @@ void ExecutionStateView::set_mark_price(const InstrumentId& instrument_id, Price
     mutable_instrument(instrument_id).mark_price = mark_price_value;
 }
 
+void ExecutionStateView::set_book_top(const InstrumentId& instrument_id, BookTop book_top) {
+    mutable_instrument(instrument_id).book_top = book_top;
+}
+
 Quantity ExecutionStateView::effective_long(const InstrumentId& instrument_id) const {
     const auto* state = find_instrument(instrument_id);
     if (state == nullptr) {
@@ -83,6 +87,14 @@ Price ExecutionStateView::mark_price(const InstrumentId& instrument_id) const {
     return state->mark_price;
 }
 
+BookTop ExecutionStateView::book_top(const InstrumentId& instrument_id) const {
+    const auto* state = find_instrument(instrument_id);
+    if (state == nullptr) {
+        return {};
+    }
+    return state->book_top;
+}
+
 ReservationResult ExecutionStateView::reserve_for_submit(const PositionOrderIntent& intent) {
     if (intent.quantity <= 0) {
         return {false, "数量必须为正"};
@@ -102,9 +114,9 @@ ReservationResult ExecutionStateView::reserve_for_submit(const PositionOrderInte
         return {true, {}};
     }
 
-    const auto price = state.mark_price;
+    auto price = intent.order.reservation_price.value_or(intent.order.limit_price.value_or(state.mark_price));
     if (price <= 0) {
-        return {false, "买入 reservation 缺少 mark price"};
+        return {false, "买入 reservation 缺少可用价格"};
     }
     const auto cost = notional_for(intent.quantity, price);
     if (effective_cash() < cost) {
@@ -121,8 +133,9 @@ void ExecutionStateView::apply_fill(const PositionOrderIntent& intent, Quantity 
     }
 
     auto& state = mutable_instrument(intent.instrument_id);
-    const auto mark = state.mark_price > 0 ? state.mark_price : fill_price;
-    const auto reserved_notional = notional_for(fill_qty, mark);
+    const auto reservation_price = intent.order.reservation_price.value_or(
+        intent.order.limit_price.value_or(state.mark_price > 0 ? state.mark_price : fill_price));
+    const auto reserved_notional = notional_for(fill_qty, reservation_price);
     const auto fill_notional = notional_for(fill_qty, fill_price);
 
     if (intent.side == TradeSide::Buy) {
@@ -177,17 +190,13 @@ void ExecutionStateView::release_unfilled(const PositionOrderIntent& intent, Qua
     if (state.working_buy_long < 0) {
         state.working_buy_long = 0;
     }
-    const auto price = state.mark_price;
+    const auto price = intent.order.reservation_price.value_or(intent.order.limit_price.value_or(state.mark_price));
     if (price > 0) {
         reserved_cash_ -= notional_for(unfilled_qty, price);
         if (reserved_cash_ < 0) {
             reserved_cash_ = 0;
         }
     }
-}
-
-void ExecutionStateView::release_rejected(const PositionOrderIntent& intent) {
-    release_unfilled(intent, intent.quantity);
 }
 
 InstrumentExecutionState& ExecutionStateView::mutable_instrument(const InstrumentId& instrument_id) {

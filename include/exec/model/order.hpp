@@ -34,16 +34,25 @@ enum class AlgoId {
     Twap,
 };
 
+enum class PriceModelId {
+    MarketIoc,
+    PassiveTopOfBook,
+    ImbalanceTopOfBook,
+    External,
+};
+
 struct OrderSpec {
     OrderType type{OrderType::Market};
     TimeInForce tif{TimeInForce::Ioc};
     std::optional<Price> limit_price{};
+    std::optional<Price> reservation_price{};
     bool post_only{false};
     bool reduce_only{false};
 };
 
 struct ExecutionStyle {
     AlgoId algo_id{AlgoId::Immediate};
+    PriceModelId price_model_id{PriceModelId::MarketIoc};
     double aggression{1.0};
     bool allow_maker{true};
     bool allow_taker{true};
@@ -71,6 +80,36 @@ inline const char* to_string(TradeSide side) {
 
 inline const char* to_string(PositionBucket bucket) {
     return bucket == PositionBucket::Long ? "LONG" : "SHORT";
+}
+
+inline const char* to_string(OrderType type) {
+    return type == OrderType::Market ? "MARKET" : "LIMIT";
+}
+
+inline const char* to_string(TimeInForce tif) {
+    switch (tif) {
+        case TimeInForce::Gtc:
+            return "GTC";
+        case TimeInForce::Ioc:
+            return "IOC";
+        case TimeInForce::Fok:
+            return "FOK";
+    }
+    return "UNKNOWN";
+}
+
+inline const char* to_string(PriceModelId model_id) {
+    switch (model_id) {
+        case PriceModelId::MarketIoc:
+            return "MarketIoc";
+        case PriceModelId::PassiveTopOfBook:
+            return "PassiveTopOfBook";
+        case PriceModelId::ImbalanceTopOfBook:
+            return "ImbalanceTopOfBook";
+        case PriceModelId::External:
+            return "External";
+    }
+    return "Unknown";
 }
 
 }  // 命名空间 exec

@@ -26,6 +26,7 @@ struct ChildOrder {
     Quantity filled_qty{0};
     std::string venue_order_id;
     std::unordered_set<std::string> seen_trade_ids;
+    bool open_quantity_released{false};
 };
 
 struct ExecutionReport {

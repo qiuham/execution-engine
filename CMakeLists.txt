@@ -8,8 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(exec_engine
     src/adapter/sim_adapter.cpp
     src/engine/execution_engine.cpp
+    src/oms/order_store.cpp
     src/planner/basket_target_collection.cpp
     src/planner/phase_planner.cpp
+    src/pricing/child_order_pricer.cpp
     src/state/execution_state_view.cpp
 )
 
@@ -19,3 +21,10 @@ target_compile_features(exec_engine PUBLIC cxx_std_20)
 
 add_executable(execution_engine apps/execution_node/main.cpp)
 target_link_libraries(execution_engine PRIVATE exec_engine)
+
+enable_testing()
+
+add_executable(exec_engine_async_test tests/async_order_flow_test.cpp)
+target_link_libraries(exec_engine_async_test PRIVATE exec_engine)
+
+add_test(NAME exec_engine_async_test COMMAND exec_engine_async_test)

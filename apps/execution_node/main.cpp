@@ -26,9 +26,16 @@ int main() {
         exec::LegTarget{.instrument_id = "B", .long_goal = exec::GoalExpression::set_quantity(30)},
     };
 
-    const auto result = engine.submit(command);
+    auto result = engine.submit(command);
     for (const auto& line : result.logs) {
         std::cout << line << '\n';
+    }
+
+    while (adapter.has_pending_reports()) {
+        result = engine.on_execution_reports(adapter.drain_reports());
+        for (const auto& line : result.logs) {
+            std::cout << line << '\n';
+        }
     }
 
     std::cout << "final A=" << state.effective_long("A") << '\n';

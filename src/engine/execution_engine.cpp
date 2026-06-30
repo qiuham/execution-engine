@@ -1,8 +1,10 @@
 #include "exec/engine/execution_engine.hpp"
 
 #include <cmath>
+#include <memory>
 #include <sstream>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace exec {
@@ -29,13 +31,34 @@ std::string describe_intent(const PositionOrderIntent& intent) {
     std::ostringstream out;
     out << to_string(intent.side) << ' ' << to_string(intent.bucket) << ' ' << intent.quantity << ' '
         << intent.instrument_id;
+    out << " order=" << to_string(intent.order.type) << '/' << to_string(intent.order.tif);
+    if (intent.order.limit_price.has_value()) {
+        out << " limit=" << *intent.order.limit_price;
+    }
+    if (intent.order.reservation_price.has_value()) {
+        out << " reserve=" << *intent.order.reservation_price;
+    }
+    if (intent.order.post_only) {
+        out << " post_only";
+    }
     return out.str();
 }
 
 }  // 匿名命名空间
 
 ExecutionEngine::ExecutionEngine(ExecutionStateView& state, IVenueAdapter& adapter)
-    : state_(state), adapter_(adapter) {}
+    : ExecutionEngine(state, adapter, std::make_shared<RuleBasedChildOrderPricer>()) {}
+
+ExecutionEngine::ExecutionEngine(ExecutionStateView& state,
+                                 IVenueAdapter& adapter,
+                                 std::shared_ptr<IChildOrderPricer> pricer)
+    : state_(state),
+      adapter_(adapter),
+      pricer_(std::move(pricer)) {
+    if (!pricer_) {
+        pricer_ = std::make_shared<RuleBasedChildOrderPricer>();
+    }
+}
 
 ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
     ExecutionResult result;
@@ -56,6 +79,7 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
         return result;
     }
 
+    active_target_commands_[command.basket_id] = command;
     basket.status = BasketStatus::Active;
     result.status = basket.status;
     result.logs.push_back("basket " + basket.basket_id + " active");
@@ -67,6 +91,7 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
             if (!validate_v1(basket, reject_reason)) {
                 result.status = BasketStatus::Failed;
                 result.logs.push_back("basket 失败: 重规划时目标解析失败: " + reject_reason);
+                active_target_commands_.erase(command.basket_id);
                 return result;
             }
             basket.status = BasketStatus::Active;
@@ -87,6 +112,7 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
                 basket.status = BasketStatus::Complete;
                 result.status = basket.status;
                 result.logs.push_back("basket " + basket.basket_id + " complete");
+                active_target_commands_.erase(basket.basket_id);
                 return result;
             }
 
@@ -98,6 +124,7 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
             if (decision.blocked_reasons.empty()) {
                 result.logs.push_back("basket 失败: 无可发子单，但目标尚未完成");
             }
+            active_target_commands_.erase(basket.basket_id);
             return result;
         }
 
@@ -114,6 +141,13 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
             basket.status = BasketStatus::Failed;
             result.status = basket.status;
             result.logs.push_back("basket 失败: 本轮子单全部被交易状态或资源预占拒绝");
+            active_target_commands_.erase(basket.basket_id);
+            return result;
+        }
+
+        if (has_working_orders(basket)) {
+            result.status = BasketStatus::Active;
+            result.logs.push_back("basket " + basket.basket_id + " 等待在途订单回报");
             return result;
         }
     }
@@ -121,6 +155,7 @@ ExecutionResult ExecutionEngine::submit(const SetBasketTargetCommand& command) {
     basket.status = BasketStatus::Failed;
     result.status = basket.status;
     result.logs.push_back("basket 失败: planner 达到迭代上限");
+    active_target_commands_.erase(basket.basket_id);
     return result;
 }
 
@@ -205,6 +240,57 @@ ExecutionResult ExecutionEngine::handle(const ExecutionCommand& command) {
             }
         },
         command);
+}
+
+ExecutionResult ExecutionEngine::on_execution_report(const ExecutionReport& report) {
+    ExecutionResult result;
+    auto* order = order_store_.find_for_report(report);
+    if (order == nullptr) {
+        result.status = BasketStatus::Rejected;
+        result.logs.push_back("订单回报无法匹配本地订单，已忽略");
+        return result;
+    }
+
+    const auto basket_id = order->basket_id;
+    const auto was_terminal = is_terminal(order->status);
+    apply_order_report(*order, report, result);
+    if (!is_terminal(order->status) && open_quantity(*order) > 0) {
+        result.logs.push_back("子单 " + std::to_string(order->order_id) + " 仍有在途数量 " +
+                              std::to_string(open_quantity(*order)));
+    }
+
+    result.status = is_terminal(order->status) ? BasketStatus::Complete : BasketStatus::Active;
+    if (!was_terminal && is_terminal(order->status)) {
+        if (order->status == OrderStatus::Rejected) {
+            active_target_commands_.erase(basket_id);
+            result.status = BasketStatus::Failed;
+            result.logs.push_back("basket " + basket_id + " 因异步拒单停止自动重规划");
+            return result;
+        }
+
+        const auto it = active_target_commands_.find(basket_id);
+        if (it != active_target_commands_.end()) {
+            const auto command = it->second;
+            auto continuation = submit(command);
+            result.status = continuation.status;
+            for (const auto& line : continuation.logs) {
+                result.logs.push_back("重规划: " + line);
+            }
+        }
+    }
+
+    return result;
+}
+
+ExecutionResult ExecutionEngine::on_execution_reports(const std::vector<ExecutionReport>& reports) {
+    ExecutionResult result;
+    result.status = BasketStatus::Complete;
+    for (const auto& report : reports) {
+        auto one = on_execution_report(report);
+        result.status = one.status;
+        result.logs.insert(result.logs.end(), one.logs.begin(), one.logs.end());
+    }
+    return result;
 }
 
 void ExecutionEngine::set_trading_state(TradingState state) {
@@ -325,51 +411,80 @@ bool ExecutionEngine::submit_child_order(const BasketExecution& basket,
         return false;
     }
 
-    const auto reservation = state_.reserve_for_submit(intent);
-    if (!reservation.ok) {
-        result.logs.push_back("子单发送前被拒绝: " + describe_intent(intent) + " 原因=" + reservation.reason);
+    const auto price_decision = pricer_->price(intent, state_);
+    if (!price_decision.accepted) {
+        result.logs.push_back("子单报价失败: " + describe_intent(intent) + " 模型=" +
+                              price_decision.model_name + " 原因=" + price_decision.reason);
         return false;
     }
 
-    ChildOrder order;
-    order.order_id = next_order_id_++;
-    order.basket_id = basket.basket_id;
-    order.intent = intent;
+    const auto& priced_intent = price_decision.intent;
+    result.logs.push_back("报价模型 " + price_decision.model_name + ": " + describe_intent(priced_intent));
 
-    result.logs.push_back("发送子单 " + std::to_string(order.order_id) + ": " + describe_intent(intent));
-    auto reports = adapter_.send_order(order);
-    if (reports.empty()) {
-        result.logs.push_back("子单 " + std::to_string(order.order_id) + " 已提交，等待交易通道回报");
-        return true;
+    const auto reservation = state_.reserve_for_submit(priced_intent);
+    if (!reservation.ok) {
+        result.logs.push_back("子单发送前被拒绝: " + describe_intent(priced_intent) + " 原因=" + reservation.reason);
+        return false;
     }
 
-    for (const auto& report : reports) {
-        const auto transition = order_state_machine_.apply(order, report);
-        if (!transition.text.empty()) {
-            result.logs.push_back("子单回报 " + std::to_string(order.order_id) + ": " + transition.text);
-        }
+    const auto order_id = next_order_id_++;
+    auto& order = order_store_.create_order(order_id, basket.basket_id, priced_intent);
 
-        if (transition.fill_qty > 0) {
-            state_.apply_fill(intent, transition.fill_qty, transition.fill_price);
-            result.logs.push_back("子单成交 " + std::to_string(order.order_id) + ": qty=" +
-                                  std::to_string(transition.fill_qty) + " price=" +
-                                  std::to_string(transition.fill_price));
-        }
+    result.logs.push_back("发送子单 " + std::to_string(order.order_id) + ": " + describe_intent(priced_intent));
+    const auto send_result = adapter_.send_order(order);
+    if (!send_result.accepted) {
+        result.logs.push_back("交易通道拒绝接收子单 " + std::to_string(order.order_id) + ": " + send_result.text);
+        apply_order_report(order,
+                           ExecutionReport{
+                               .order_id = order.order_id,
+                               .status = OrderStatus::Rejected,
+                               .text = send_result.text.empty() ? "交易通道拒绝接收" : send_result.text,
+                           },
+                           result);
+        return false;
     }
 
-    if (is_terminal(order.status)) {
-        const auto unfilled = open_quantity(order);
-        if (unfilled > 0) {
-            state_.release_unfilled(intent, unfilled);
-            result.logs.push_back("子单释放未成交资源 " + std::to_string(order.order_id) + ": qty=" +
-                                  std::to_string(unfilled) + " status=" + to_string(order.status));
-        }
-    } else if (open_quantity(order) > 0) {
-        result.logs.push_back("子单 " + std::to_string(order.order_id) + " 仍有在途数量 " +
-                              std::to_string(open_quantity(order)));
+    result.logs.push_back("子单 " + std::to_string(order.order_id) + " 已提交，等待交易通道回报");
+    return true;
+}
+
+void ExecutionEngine::apply_order_report(ChildOrder& order,
+                                         const ExecutionReport& report,
+                                         ExecutionResult& result) {
+    const auto transition = order_state_machine_.apply(order, report);
+    if (!report.venue_order_id.empty()) {
+        order_store_.bind_venue_order_id(order.order_id, report.venue_order_id);
     }
 
-    return order.filled_qty > 0 || !is_terminal(order.status);
+    if (!transition.text.empty()) {
+        result.logs.push_back("子单回报 " + std::to_string(order.order_id) + ": " + transition.text);
+    }
+
+    if (transition.fill_qty > 0) {
+        auto fill_price = transition.fill_price;
+        if (fill_price <= 0) {
+            fill_price = state_.mark_price(order.intent.instrument_id);
+        }
+        state_.apply_fill(order.intent, transition.fill_qty, fill_price);
+        result.logs.push_back("子单成交 " + std::to_string(order.order_id) + ": qty=" +
+                              std::to_string(transition.fill_qty) + " price=" + std::to_string(fill_price));
+    }
+
+    release_terminal_order(order, result);
+}
+
+void ExecutionEngine::release_terminal_order(ChildOrder& order, ExecutionResult& result) {
+    if (!is_terminal(order.status) || order.open_quantity_released) {
+        return;
+    }
+
+    const auto unfilled = open_quantity(order);
+    if (unfilled > 0) {
+        state_.release_unfilled(order.intent, unfilled);
+        result.logs.push_back("子单释放未成交资源 " + std::to_string(order.order_id) + ": qty=" +
+                              std::to_string(unfilled) + " status=" + to_string(order.status));
+    }
+    order.open_quantity_released = true;
 }
 
 }  // 命名空间 exec
