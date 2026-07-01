@@ -322,5 +322,190 @@ int main() {
         }
     }
 
+    {
+        exec::ExecutionStateView state;
+        state.set_cash(100);
+        state.set_position("A", 0);
+        state.set_mark_price("A", 10);
+
+        exec::SimAdapter adapter(state);
+        adapter.push_scripted_reports({
+            exec::ExecutionReport{.status = exec::OrderStatus::New, .text = "只 ack"},
+        });
+        exec::ExecutionEngine engine(state, adapter);
+
+        auto submit = engine.submit(make_target_command("cancel-open", 5));
+        if (!expect(submit.status == exec::BasketStatus::Active, "等待撤单前订单应处于 Active")) {
+            return 1;
+        }
+        submit = drain_adapter_reports(engine, adapter);
+        if (!expect(submit.status == exec::BasketStatus::Active, "ack 后订单应仍在途") ||
+            !expect(state.effective_cash() == 50, "ack 后买入应占用现金")) {
+            return 1;
+        }
+
+        exec::ControlCommand cancel;
+        cancel.action = exec::ControlAction::CancelBasket;
+        cancel.basket_id = "cancel-open";
+        auto canceled = engine.control(cancel);
+        if (!expect(canceled.status == exec::BasketStatus::Active, "CancelBasket 发出后应等待异步撤单回报") ||
+            !expect(state.effective_cash() == 50, "PendingCancel 不应提前释放现金")) {
+            return 1;
+        }
+
+        canceled = drain_adapter_reports(engine, adapter);
+        if (!expect(canceled.status == exec::BasketStatus::Complete, "撤单成功后控制流程应完成") ||
+            !expect(state.effective_long("A") == 0, "未成交撤单不应改变持仓") ||
+            !expect(state.effective_cash() == 100, "未成交撤单应释放全部现金预占") ||
+            !expect(!state.has_working_order("A"), "撤单成功后不应还有在途订单")) {
+            return 1;
+        }
+    }
+
+    {
+        exec::ExecutionStateView state;
+        state.set_cash(100);
+        state.set_position("A", 0);
+        state.set_mark_price("A", 10);
+
+        exec::SimAdapter adapter(state);
+        adapter.push_scripted_reports({
+            exec::ExecutionReport{.status = exec::OrderStatus::New, .text = "只 ack"},
+        });
+        exec::ExecutionEngine engine(state, adapter);
+
+        auto submit = engine.submit(make_target_command("cancel-partial", 5));
+        if (!expect(submit.status == exec::BasketStatus::Active, "等待部分成交前订单应处于 Active")) {
+            return 1;
+        }
+        submit = drain_adapter_reports(engine, adapter);
+        if (!expect(submit.status == exec::BasketStatus::Active, "ack 后订单应仍在途")) {
+            return 1;
+        }
+
+        auto partial = engine.on_execution_report(exec::ExecutionReport{
+            .order_id = 1,
+            .trade_id = "T4",
+            .status = exec::OrderStatus::PartiallyFilled,
+            .last_qty = 3,
+            .cumulative_qty = 3,
+            .last_price = 10,
+            .text = "部分成交",
+        });
+        if (!expect(partial.status == exec::BasketStatus::Active, "部分成交后订单应仍在途") ||
+            !expect(state.effective_cash() == 50, "部分成交后现金应包含剩余预占")) {
+            return 1;
+        }
+
+        exec::ControlCommand cancel;
+        cancel.action = exec::ControlAction::CancelBasket;
+        cancel.basket_id = "cancel-partial";
+        auto canceled = engine.control(cancel);
+        if (!expect(canceled.status == exec::BasketStatus::Active, "部分成交撤单应等待异步回报")) {
+            return 1;
+        }
+        canceled = drain_adapter_reports(engine, adapter);
+        if (!expect(canceled.status == exec::BasketStatus::Complete, "剩余数量撤单成功后应完成") ||
+            !expect(state.effective_long("A") == 3, "部分成交撤单后持仓应保留已成交数量") ||
+            !expect(state.effective_cash() == 70, "部分成交撤单应释放剩余现金预占") ||
+            !expect(!state.has_working_order("A"), "部分成交撤单后不应还有在途订单")) {
+            return 1;
+        }
+    }
+
+    {
+        exec::ExecutionStateView state;
+        state.set_cash(100);
+        state.set_position("A", 0);
+        state.set_mark_price("A", 10);
+
+        exec::SimAdapter adapter(state);
+        adapter.push_scripted_reports({
+            exec::ExecutionReport{.status = exec::OrderStatus::New, .text = "只 ack"},
+        });
+        exec::ExecutionEngine engine(state, adapter);
+
+        auto submit = engine.submit(make_target_command("cancel-rejected", 5));
+        if (!expect(submit.status == exec::BasketStatus::Active, "等待撤单拒绝前订单应处于 Active")) {
+            return 1;
+        }
+        submit = drain_adapter_reports(engine, adapter);
+        if (!expect(submit.status == exec::BasketStatus::Active, "ack 后订单应仍在途")) {
+            return 1;
+        }
+
+        adapter.push_scripted_reports({
+            exec::ExecutionReport{.status = exec::OrderStatus::CancelRejected, .text = "撤单拒绝"},
+        });
+        exec::ControlCommand cancel;
+        cancel.action = exec::ControlAction::CancelBasket;
+        cancel.basket_id = "cancel-rejected";
+        auto rejected = engine.control(cancel);
+        if (!expect(rejected.status == exec::BasketStatus::Active, "撤单拒绝前应等待交易通道回报")) {
+            return 1;
+        }
+        rejected = drain_adapter_reports(engine, adapter);
+        if (!expect(rejected.status == exec::BasketStatus::Active, "撤单拒绝后订单仍应在途") ||
+            !expect(state.effective_cash() == 50, "撤单拒绝不应释放现金预占") ||
+            !expect(state.has_working_order("A"), "撤单拒绝后订单仍应工作")) {
+            return 1;
+        }
+    }
+
+    {
+        exec::ExecutionStateView state;
+        state.set_cash(200);
+        state.set_position("A", 0);
+        state.set_position("B", 0);
+        state.set_mark_price("A", 10);
+        state.set_mark_price("B", 10);
+
+        exec::SimAdapter adapter(state);
+        adapter.push_scripted_reports({
+            exec::ExecutionReport{.status = exec::OrderStatus::New, .text = "A ack"},
+        });
+        adapter.push_scripted_reports({
+            exec::ExecutionReport{.status = exec::OrderStatus::New, .text = "B ack"},
+        });
+        exec::ExecutionEngine engine(state, adapter);
+
+        exec::SetBasketTargetCommand command;
+        command.basket_id = "cancel-all";
+        command.strategy_id = "test-strategy";
+        command.account_id = "test-account";
+        command.plan_policy.mode = exec::BasketPlanMode::Parallel;
+        command.legs = {
+            exec::LegTarget{.instrument_id = "A", .long_goal = exec::GoalExpression::set_quantity(5)},
+            exec::LegTarget{.instrument_id = "B", .long_goal = exec::GoalExpression::set_quantity(5)},
+        };
+
+        auto submit = engine.submit(command);
+        if (!expect(submit.status == exec::BasketStatus::Active, "CancelAll 测试前 basket 应处于 Active")) {
+            return 1;
+        }
+        submit = drain_adapter_reports(engine, adapter);
+        if (!expect(submit.status == exec::BasketStatus::Active, "两个 ack 后应仍等待成交") ||
+            !expect(state.effective_cash() == 100, "两个买单 ack 后应占用两笔现金") ||
+            !expect(state.has_working_order("A"), "A 应有在途订单") ||
+            !expect(state.has_working_order("B"), "B 应有在途订单")) {
+            return 1;
+        }
+
+        exec::ControlCommand cancel;
+        cancel.action = exec::ControlAction::CancelAll;
+        auto canceled = engine.control(cancel);
+        if (!expect(canceled.status == exec::BasketStatus::Active, "CancelAll 发出后应等待异步撤单回报")) {
+            return 1;
+        }
+
+        canceled = drain_adapter_reports(engine, adapter);
+        if (!expect(canceled.status == exec::BasketStatus::Complete, "CancelAll 撤单成功后应完成") ||
+            !expect(state.effective_cash() == 200, "CancelAll 应释放全部现金预占") ||
+            !expect(!state.has_working_order("A"), "CancelAll 后 A 不应还有在途订单") ||
+            !expect(!state.has_working_order("B"), "CancelAll 后 B 不应还有在途订单")) {
+            return 1;
+        }
+    }
+
     return 0;
 }

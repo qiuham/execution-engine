@@ -86,19 +86,35 @@ const std::vector<ClientOrderId>* OrderStore::order_ids_for_basket(const BasketI
     return &it->second;
 }
 
-bool OrderStore::has_open_order_for_basket(const BasketId& basket_id) const {
+std::vector<ClientOrderId> OrderStore::cancelable_order_ids_for_basket(const BasketId& basket_id) const {
+    std::vector<ClientOrderId> result;
     const auto* ids = order_ids_for_basket(basket_id);
     if (ids == nullptr) {
-        return false;
+        return result;
     }
 
     for (const auto order_id : *ids) {
         const auto* order = find(order_id);
-        if (order != nullptr && !is_terminal(order->status) && open_quantity(*order) > 0) {
-            return true;
+        if (order != nullptr && is_cancelable(*order)) {
+            result.push_back(order_id);
         }
     }
-    return false;
+    return result;
+}
+
+std::vector<ClientOrderId> OrderStore::cancelable_order_ids() const {
+    std::vector<ClientOrderId> result;
+    result.reserve(orders_.size());
+    for (const auto& [order_id, order] : orders_) {
+        if (is_cancelable(order)) {
+            result.push_back(order_id);
+        }
+    }
+    return result;
+}
+
+bool OrderStore::has_cancelable_order_for_basket(const BasketId& basket_id) const {
+    return !cancelable_order_ids_for_basket(basket_id).empty();
 }
 
 std::size_t OrderStore::size() const {

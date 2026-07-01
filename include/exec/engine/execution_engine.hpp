@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -23,6 +24,11 @@ namespace exec {
 struct ExecutionResult {
     BasketStatus status{BasketStatus::Pending};
     std::vector<std::string> logs;
+};
+
+struct CancelDispatchSummary {
+    std::size_t candidate_count{0};
+    std::size_t sent_count{0};
 };
 
 class ExecutionEngine {
@@ -53,6 +59,9 @@ private:
     bool submit_child_order(const BasketExecution& basket,
                             const PositionOrderIntent& intent,
                             ExecutionResult& result);
+    bool cancel_child_order(ChildOrder& order, ExecutionResult& result);
+    CancelDispatchSummary cancel_basket_orders(const BasketId& basket_id, ExecutionResult& result);
+    CancelDispatchSummary cancel_all_orders(ExecutionResult& result);
     void apply_order_report(ChildOrder& order,
                             const ExecutionReport& report,
                             ExecutionResult& result);

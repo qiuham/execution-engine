@@ -16,6 +16,7 @@ public:
     virtual ~IVenueAdapter() = default;
 
     virtual SendOrderResult send_order(const ChildOrder& order) = 0;
+    virtual SendOrderResult cancel_order(const ChildOrder& order) = 0;
 };
 
 }  // 命名空间 exec

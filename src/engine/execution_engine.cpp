@@ -219,10 +219,34 @@ ExecutionResult ExecutionEngine::control(const ControlCommand& command) {
             result.logs.push_back("控制命令: kill switch 触发，交易状态切换到 Killed");
             break;
         case ControlAction::CancelBasket:
-            result.logs.push_back("控制命令: CancelBasket 已接收，真实撤单链路后续接入");
+            if (!command.basket_id.has_value() || command.basket_id->empty()) {
+                result.status = BasketStatus::Rejected;
+                result.logs.push_back("控制命令: CancelBasket 被拒绝，缺少 basket_id");
+                break;
+            }
+            active_target_commands_.erase(*command.basket_id);
+            if (const auto cancel_summary = cancel_basket_orders(*command.basket_id, result);
+                cancel_summary.sent_count > 0) {
+                result.status = BasketStatus::Active;
+                result.logs.push_back("控制命令: CancelBasket 已发出撤单，等待交易通道回报");
+            } else if (cancel_summary.candidate_count > 0) {
+                result.status = BasketStatus::Failed;
+                result.logs.push_back("控制命令: CancelBasket 找到可撤订单，但撤单发送全部失败");
+            } else {
+                result.logs.push_back("控制命令: CancelBasket 没有可撤在途订单");
+            }
             break;
         case ControlAction::CancelAll:
-            result.logs.push_back("控制命令: CancelAll 已接收，真实撤单链路后续接入");
+            active_target_commands_.clear();
+            if (const auto cancel_summary = cancel_all_orders(result); cancel_summary.sent_count > 0) {
+                result.status = BasketStatus::Active;
+                result.logs.push_back("控制命令: CancelAll 已发出撤单，等待交易通道回报");
+            } else if (cancel_summary.candidate_count > 0) {
+                result.status = BasketStatus::Failed;
+                result.logs.push_back("控制命令: CancelAll 找到可撤订单，但撤单发送全部失败");
+            } else {
+                result.logs.push_back("控制命令: CancelAll 没有可撤在途订单");
+            }
             break;
     }
 
@@ -446,6 +470,60 @@ bool ExecutionEngine::submit_child_order(const BasketExecution& basket,
 
     result.logs.push_back("子单 " + std::to_string(order.order_id) + " 已提交，等待交易通道回报");
     return true;
+}
+
+bool ExecutionEngine::cancel_child_order(ChildOrder& order, ExecutionResult& result) {
+    if (is_terminal(order.status) || open_quantity(order) <= 0) {
+        result.logs.push_back("撤单跳过: 子单 " + std::to_string(order.order_id) + " 已不在可撤状态");
+        return false;
+    }
+    if (order.status == OrderStatus::PendingCancel) {
+        result.logs.push_back("撤单跳过: 子单 " + std::to_string(order.order_id) + " 已在 PendingCancel");
+        return false;
+    }
+
+    const auto cancel_result = adapter_.cancel_order(order);
+    if (!cancel_result.accepted) {
+        result.logs.push_back("撤单发送失败: 子单 " + std::to_string(order.order_id) + " 原因=" +
+                              cancel_result.text);
+        return false;
+    }
+
+    apply_order_report(order,
+                       ExecutionReport{
+                           .order_id = order.order_id,
+                           .status = OrderStatus::PendingCancel,
+                           .text = cancel_result.text.empty() ? "撤单请求已发送" : cancel_result.text,
+                       },
+                       result);
+    result.logs.push_back("撤单已发送: 子单 " + std::to_string(order.order_id));
+    return true;
+}
+
+CancelDispatchSummary ExecutionEngine::cancel_basket_orders(const BasketId& basket_id, ExecutionResult& result) {
+    CancelDispatchSummary summary;
+    const auto order_ids = order_store_.cancelable_order_ids_for_basket(basket_id);
+    summary.candidate_count = order_ids.size();
+    for (const auto order_id : order_ids) {
+        auto* order = order_store_.find(order_id);
+        if (order != nullptr && cancel_child_order(*order, result)) {
+            ++summary.sent_count;
+        }
+    }
+    return summary;
+}
+
+CancelDispatchSummary ExecutionEngine::cancel_all_orders(ExecutionResult& result) {
+    CancelDispatchSummary summary;
+    const auto order_ids = order_store_.cancelable_order_ids();
+    summary.candidate_count = order_ids.size();
+    for (const auto order_id : order_ids) {
+        auto* order = order_store_.find(order_id);
+        if (order != nullptr && cancel_child_order(*order, result)) {
+            ++summary.sent_count;
+        }
+    }
+    return summary;
 }
 
 void ExecutionEngine::apply_order_report(ChildOrder& order,

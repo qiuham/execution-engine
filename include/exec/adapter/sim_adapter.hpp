@@ -16,8 +16,12 @@ public:
     bool has_pending_reports() const;
     std::vector<ExecutionReport> drain_reports();
     SendOrderResult send_order(const ChildOrder& order) override;
+    SendOrderResult cancel_order(const ChildOrder& order) override;
 
 private:
+    Price default_report_price(const ChildOrder& order) const;
+    void normalize_reports(const ChildOrder& order, std::vector<ExecutionReport>& reports) const;
+
     const ExecutionStateView& state_;
     std::deque<std::vector<ExecutionReport>> scripted_reports_;
     std::vector<ExecutionReport> pending_reports_;

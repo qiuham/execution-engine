@@ -27,7 +27,9 @@ public:
     void bind_venue_order_id(ClientOrderId order_id, const std::string& venue_order_id);
 
     const std::vector<ClientOrderId>* order_ids_for_basket(const BasketId& basket_id) const;
-    bool has_open_order_for_basket(const BasketId& basket_id) const;
+    std::vector<ClientOrderId> cancelable_order_ids_for_basket(const BasketId& basket_id) const;
+    std::vector<ClientOrderId> cancelable_order_ids() const;
+    bool has_cancelable_order_for_basket(const BasketId& basket_id) const;
 
     std::size_t size() const;
 

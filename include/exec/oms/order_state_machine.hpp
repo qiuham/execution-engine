@@ -13,6 +13,7 @@ enum class OrderStatus {
     New,
     PartiallyFilled,
     PendingCancel,
+    CancelRejected,
     Filled,
     Rejected,
     Canceled,
@@ -58,6 +59,8 @@ inline const char* to_string(OrderStatus status) {
             return "PartiallyFilled";
         case OrderStatus::PendingCancel:
             return "PendingCancel";
+        case OrderStatus::CancelRejected:
+            return "CancelRejected";
         case OrderStatus::Filled:
             return "Filled";
         case OrderStatus::Rejected:
@@ -79,6 +82,10 @@ inline bool is_fill_status(OrderStatus status) {
 inline Quantity open_quantity(const ChildOrder& order) {
     const auto open = order.intent.quantity - order.filled_qty;
     return open > 0 ? open : 0;
+}
+
+inline bool is_cancelable(const ChildOrder& order) {
+    return !is_terminal(order.status) && order.status != OrderStatus::PendingCancel && open_quantity(order) > 0;
 }
 
 class OrderStateMachine {
@@ -114,6 +121,12 @@ public:
         if (report.status == OrderStatus::PendingCancel) {
             order.status = OrderStatus::PendingCancel;
             result.accepted = true;
+            result.text = report.text;
+            return result;
+        }
+
+        if (report.status == OrderStatus::CancelRejected) {
+            order.status = order.filled_qty > 0 ? OrderStatus::PartiallyFilled : OrderStatus::New;
             result.text = report.text;
             return result;
         }
@@ -154,6 +167,12 @@ public:
                 order.filled_qty += incremental;
                 result.accepted = true;
                 result.fill_qty = incremental;
+            }
+
+            if (report.status == OrderStatus::Filled && order.filled_qty < order.intent.quantity &&
+                incremental <= 0) {
+                result.text = result.text.empty() ? "Filled 回报缺少新增成交数量，已忽略" : result.text;
+                return result;
             }
 
             if (order.filled_qty >= order.intent.quantity || report.status == OrderStatus::Filled) {
